@@ -18,7 +18,7 @@ from django.template.loader import render_to_string
 from django.http import JsonResponse
 from django.template import TemplateDoesNotExist
 from django.template import loader
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from .columns import Column
 from .columns import ColumnLink
