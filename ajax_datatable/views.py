@@ -4,6 +4,7 @@ from __future__ import absolute_import, unicode_literals
 
 import datetime
 import json
+
 from django.views.generic import View
 from django.http.response import HttpResponse, HttpResponseBadRequest
 from django.core.exceptions import FieldDoesNotExist
@@ -13,6 +14,7 @@ from django.db import models
 from django.db.models import Q
 from django.db.models import Prefetch
 from django.views.decorators.csrf import csrf_exempt
+from django.utils.datastructures import MultiValueDictKeyError
 from django.utils.decorators import method_decorator
 from django.template.loader import render_to_string
 from django.http import JsonResponse
@@ -532,7 +534,7 @@ class AjaxDatatableView(View):
         try:
             query_dict = request.REQUEST
             params = self.read_parameters(query_dict)
-        except ValueError:
+        except (ValueError, MultiValueDictKeyError):
             return HttpResponseBadRequest()
 
         if TRACE_QUERYDICT:
