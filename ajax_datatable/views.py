@@ -39,6 +39,11 @@ from .app_settings import TEST_FILTERS
 from .app_settings import DISABLE_QUERYSET_OPTIMIZATION
 
 
+class AjaxDatatableError(Exception):
+    def __init__(self, message, status_code=400):
+        self.message = message
+        self.status_code = status_code
+
 class AjaxDatatableView(View):
 
     # Either override in derived class, or override self.get_column_defs()
@@ -516,71 +521,76 @@ class AjaxDatatableView(View):
         return self.get(request, *args, **kwargs)
 
     def get(self, request, *args, **kwargs):
-
-        # if not getattr(request, 'REQUEST', None):
-        #     request.REQUEST = request.GET if request.method=='GET' else request.POST
-
-        t0 = datetime.datetime.now()
-
         try:
-            is_ajax_request = request.accepts("application/json")
-        except AttributeError as e:
-            # Django < 4.0
-            is_ajax_request = request.is_ajax()
 
-        if not is_ajax_request:
-            return HttpResponseBadRequest()
+            # if not getattr(request, 'REQUEST', None):
+            #     request.REQUEST = request.GET if request.method=='GET' else request.POST
 
-        try:
-            query_dict = request.REQUEST
-            params = self.read_parameters(query_dict)
-        except (ValueError, MultiValueDictKeyError):
-            return HttpResponseBadRequest()
+            t0 = datetime.datetime.now()
 
-        if TRACE_QUERYDICT:
-            trace(json.dumps(query_dict, indent=2, cls=DjangoJSONEncoder), prompt='query_dict')
-            trace(params, prompt='params', prettify=True)
+            try:
+                is_ajax_request = request.accepts("application/json")
+            except AttributeError as e:
+                # Django < 4.0
+                is_ajax_request = request.is_ajax()
 
-        # Prepare the queryset and apply the search and order filters
-        qs = self.get_initial_queryset(request)
-        if not DISABLE_QUERYSET_OPTIMIZATION and not self.disable_queryset_optimization:
-            if (
-                    self.disable_queryset_optimization_select_related and
-                    self.disable_queryset_optimization_only and self.disable_queryset_optimization_prefetch_related
-            ):
-                pass
+            if not is_ajax_request:
+                return HttpResponseBadRequest("Bad Request: This view only accepts AJAX requests")
+
+            try:
+                query_dict = request.REQUEST
+                params = self.read_parameters(query_dict)
+            except (ValueError, MultiValueDictKeyError):
+                return HttpResponseBadRequest("Invalid parameters")
+
+            if TRACE_QUERYDICT:
+                trace(json.dumps(query_dict, indent=2, cls=DjangoJSONEncoder), prompt='query_dict')
+                trace(params, prompt='params', prettify=True)
+
+            # Prepare the queryset and apply the search and order filters
+            qs = self.get_initial_queryset(request)
+            if not qs:
+                return HttpResponseBadRequest("No queryset defined")
+            if not DISABLE_QUERYSET_OPTIMIZATION and not self.disable_queryset_optimization:
+                if (
+                        self.disable_queryset_optimization_select_related and
+                        self.disable_queryset_optimization_only and self.disable_queryset_optimization_prefetch_related
+                ):
+                    pass
+                else:
+                    qs = self.optimize_queryset(qs)
+            qs = self.prepare_queryset(params, qs)
+            if TRACE_QUERYSET:
+                prettyprint_queryset(qs)
+
+            # Slice result
+            # paginator = Paginator(qs, params['length'] if params['length'] != -1 else qs.count())
+            if params['length'] == -1:
+                # fix: prevent ZeroDivisionError
+                paginator = Paginator(qs, max(1, qs.count()))
             else:
-                qs = self.optimize_queryset(qs)
-        qs = self.prepare_queryset(params, qs)
-        if TRACE_QUERYSET:
-            prettyprint_queryset(qs)
+                paginator = Paginator(qs, params['length'])
+            response_dict = self.get_response_dict(request, paginator, params['draw'], params['start'])
+            response_dict['footer_message'] = self.footer_message(qs, params)
+            response_dict['toolbar_message'] = self.toolbar_message(qs, params)
 
-        # Slice result
-        # paginator = Paginator(qs, params['length'] if params['length'] != -1 else qs.count())
-        if params['length'] == -1:
-            # fix: prevent ZeroDivisionError
-            paginator = Paginator(qs, max(1, qs.count()))
-        else:
-            paginator = Paginator(qs, params['length'])
-        response_dict = self.get_response_dict(request, paginator, params['draw'], params['start'])
-        response_dict['footer_message'] = self.footer_message(qs, params)
-        response_dict['toolbar_message'] = self.toolbar_message(qs, params)
+            # Prepare response
+            response = HttpResponse(
+                json.dumps(
+                    response_dict,
+                    cls=DjangoJSONEncoder
+                ),
+                content_type="application/json")
 
-        # Prepare response
-        response = HttpResponse(
-            json.dumps(
-                response_dict,
-                cls=DjangoJSONEncoder
-            ),
-            content_type="application/json")
+            # Trace elapsed time
+            if TRACE_QUERYSET:
+                td = datetime.datetime.now() - t0
+                ms = (td.seconds * 1000) + (td.microseconds / 1000.0)
+                trace('%d [ms]' % ms, prompt="Table rendering time")
 
-        # Trace elapsed time
-        if TRACE_QUERYSET:
-            td = datetime.datetime.now() - t0
-            ms = (td.seconds * 1000) + (td.microseconds / 1000.0)
-            trace('%d [ms]' % ms, prompt="Table rendering time")
-
-        return response
+            return response
+        except AjaxDatatableError as e:
+            return HttpResponseBadRequest(e.message)
 
     def read_parameters(self, query_dict):
         """
